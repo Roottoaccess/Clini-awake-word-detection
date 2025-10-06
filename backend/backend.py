@@ -9,8 +9,8 @@ import numpy as np
 import os
 
 # ===== CONFIGURATION FROM ENVIRONMENT =====
-ACCESS_KEY = os.getenv("PORCUPINE_ACCESS_KEY", "BkTK1rxx5m+2xK08m6Iq2DxrLznQG7SHZalMXUn+56YHAL2Di/ZWiA==")
-CUSTOM_KEYWORD_PATH = os.getenv("KEYWORD_PATH", "./clini_en_mac_v3_0_0-1.ppn")
+ACCESS_KEY = os.getenv("PORCUPINE_ACCESS_KEY", "qbBYciratfQCYrwHItqMz6Bb5fcWWybBiE43LxuCPKJX4O2G14NBgg==")
+CUSTOM_KEYWORD_PATH = os.getenv("KEYWORD_PATH", "./clini_en_linux_v3_0_0.ppn")
 PORT = int(os.getenv("PORT", 8765))
 
 # Recording settings
