@@ -7,6 +7,13 @@ import websockets
 import speech_recognition as sr
 from datetime import datetime
 
+import os
+
+ON_RENDER = os.environ.get("RENDER") == "true"
+
+if not ON_RENDER:
+    import pyaudio  # Only import locally
+
 # ===== CONFIGURATION =====
 ACCESS_KEY = "BkTK1rxx5m+2xK08m6Iq2DxrLznQG7SHZalMXUn+56YHAL2Di/ZWiA=="
 CUSTOM_KEYWORD_PATH = "/Users/biswarupdutta/Library/CloudStorage/OneDrive-MSFT/office_workings_projects/clini_testing_project/clini-app/backend/clini_en_mac_v3_0_0-1.ppn"
