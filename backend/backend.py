@@ -360,7 +360,7 @@ async def main():
     
     # Start server
     try:
-        async with websockets.serve(handle_client, "localhost", 8765):
+        async with websockets.serve(handler, "0.0.0.0", int(os.environ.get("PORT", 8765))):
             await asyncio.Future()
     except Exception as e:
         print(f"\n❌ Server error: {e}")
