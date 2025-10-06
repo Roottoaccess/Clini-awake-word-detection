@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: clini-voice-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip3 install -r requirements.txt
+    startCommand: python3 backend.py
+    envVars:
+      - key: PORCUPINE_ACCESS_KEY
+        sync: false
+      - key: KEYWORD_PATH
+        value: ./clini_en_mac_v3_0_0-1.ppn
+      - key: PYTHON_VERSION
+        value: 3.13.4
