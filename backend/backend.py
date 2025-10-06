@@ -1,16 +1,17 @@
 import asyncio
 import json
-import struct
 import base64
 import pvporcupine
 import websockets
 import speech_recognition as sr
 from datetime import datetime
 import numpy as np
+import os
 
-# ===== CONFIGURATION =====
-ACCESS_KEY = "BkTK1rxx5m+2xK08m6Iq2DxrLznQG7SHZalMXUn+56YHAL2Di/ZWiA=="
-CUSTOM_KEYWORD_PATH = "/Users/biswarupdutta/Desktop/New Clini/clini-app/backend/clini_en_mac_v3_0_0-1.ppn"
+# ===== CONFIGURATION FROM ENVIRONMENT =====
+ACCESS_KEY = os.getenv("PORCUPINE_ACCESS_KEY", "BkTK1rxx5m+2xK08m6Iq2DxrLznQG7SHZalMXUn+56YHAL2Di/ZWiA==")
+CUSTOM_KEYWORD_PATH = os.getenv("KEYWORD_PATH", "./clini_en_mac_v3_0_0-1.ppn")
+PORT = int(os.getenv("PORT", 8765))
 
 # Recording settings
 RECORDING_DURATION = 5  # seconds to record after wake word
@@ -343,19 +344,19 @@ async def main():
         print("❌ Initialization failed. Exiting...")
         return
     
-    print(f"\n📡 Server: ws://localhost:8765")
+    print(f"\n📡 Server: ws://0.0.0.0:{PORT}")
     print(f"🎯 Wake Word: 'Clinisio'")
     print(f"⏱️ Recording: {RECORDING_DURATION} seconds after wake word")
-    print(f"\n💡 Usage:")
-    print(f"   1. Open React app and click 'Start Listening'")
-    print(f"   2. Say: 'Clinisio' + your command")
-    print(f"   3. Example: 'Clinisio, add paracetamol 650 mg'")
+    print(f"\n💡 Environment:")
+    print(f"   ACCESS_KEY: {'Set' if ACCESS_KEY else 'Not set'}")
+    print(f"   KEYWORD_PATH: {CUSTOM_KEYWORD_PATH}")
+    print(f"   PORT: {PORT}")
     print(f"\nPress Ctrl+C to stop")
     print("=" * 70 + "\n")
     
-    # Start server
+    # Start server - Bind to 0.0.0.0 for Render
     try:
-        async with websockets.serve(handle_client, "localhost", 8765):
+        async with websockets.serve(handle_client, "0.0.0.0", PORT):
             await asyncio.Future()
     except Exception as e:
         print(f"\n❌ Server error: {e}")
