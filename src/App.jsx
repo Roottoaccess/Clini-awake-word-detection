@@ -132,7 +132,7 @@ export default function PrescriptionVoiceDetector() {
     try {
       if (wsRef.current) wsRef.current.close();
 
-      const ws = new WebSocket('ws://localhost:8765');
+      const ws = new WebSocket('https://clini-awake-word-detection-4.onrender.com');
 
       ws.onopen = () => {
         setIsConnected(true);
