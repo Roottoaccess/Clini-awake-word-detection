@@ -1,51 +1,39 @@
 import asyncio
 import json
 import struct
+import base64
 import pvporcupine
-import pyaudio
 import websockets
 import speech_recognition as sr
 from datetime import datetime
+import numpy as np
 
 # ===== CONFIGURATION =====
 ACCESS_KEY = "BkTK1rxx5m+2xK08m6Iq2DxrLznQG7SHZalMXUn+56YHAL2Di/ZWiA=="
-CUSTOM_KEYWORD_PATH = "/Users/biswarupdutta/Library/CloudStorage/OneDrive-MSFT/office_workings_projects/clini_testing_project/clini-app/backend/clini_en_mac_v3_0_0-1.ppn"
+CUSTOM_KEYWORD_PATH = "/Users/biswarupdutta/Desktop/New Clini/clini-app/backend/clini_en_mac_v3_0_0-1.ppn"
 
 # Recording settings
 RECORDING_DURATION = 5  # seconds to record after wake word
 
 # ===== GLOBAL STATE =====
 porcupine = None
-pa = None
-stream = None
 is_listening = False
 is_recording_command = False
 connected_clients = set()
 recognizer = sr.Recognizer()
 audio_buffer = []
+wake_word_buffer = []  # Buffer for wake word detection
 
 # ===== INITIALIZE PORCUPINE =====
 def init_porcupine():
-    """Initialize Porcupine wake word engine and audio stream"""
-    global porcupine, pa, stream
+    """Initialize Porcupine wake word engine"""
+    global porcupine
     
     try:
         # Create Porcupine instance
         porcupine = pvporcupine.create(
             access_key=ACCESS_KEY,
             keyword_paths=[CUSTOM_KEYWORD_PATH]
-        )
-        
-        # Initialize PyAudio
-        pa = pyaudio.PyAudio()
-        
-        # Open audio stream
-        stream = pa.open(
-            rate=porcupine.sample_rate,
-            channels=1,
-            format=pyaudio.paInt16,
-            input=True,
-            frames_per_buffer=porcupine.frame_length
         )
         
         print("✅ Porcupine initialized successfully")
@@ -60,20 +48,15 @@ def init_porcupine():
 
 # ===== CLEANUP =====
 def cleanup():
-    """Clean up all audio resources"""
-    global stream, pa, porcupine
+    """Clean up all resources"""
+    global porcupine
     
     try:
-        if stream:
-            stream.stop_stream()
-            stream.close()
-        if pa:
-            pa.terminate()
         if porcupine:
             porcupine.delete()
         print("✅ Resources cleaned up")
     except Exception as e:
-        print(f"⚠️  Cleanup warning: {e}")
+        print(f"⚠️ Cleanup warning: {e}")
 
 # ===== BROADCAST =====
 async def broadcast(message):
@@ -90,6 +73,133 @@ async def broadcast(message):
             disconnected.add(client)
     
     connected_clients.difference_update(disconnected)
+
+# ===== PROCESS AUDIO CHUNK =====
+async def process_audio_chunk(audio_data, sample_rate):
+    """
+    Process incoming audio chunk for wake word detection or recording
+    
+    Args:
+        audio_data: Base64 encoded PCM audio data
+        sample_rate: Sample rate from frontend
+    """
+    global is_recording_command, audio_buffer, wake_word_buffer, porcupine
+    
+    try:
+        # Decode base64 audio
+        pcm_bytes = base64.b64decode(audio_data)
+        
+        # Convert to int16 array
+        pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+        
+        # Resample if needed (frontend sends 16000 Hz, Porcupine expects its sample rate)
+        if sample_rate != porcupine.sample_rate:
+            # Simple resampling (for production, use proper resampling library)
+            ratio = porcupine.sample_rate / sample_rate
+            new_length = int(len(pcm_array) * ratio)
+            pcm_array = np.interp(
+                np.linspace(0, len(pcm_array), new_length),
+                np.arange(len(pcm_array)),
+                pcm_array
+            ).astype(np.int16)
+        
+        # If recording command, add to buffer
+        if is_recording_command:
+            audio_buffer.append(pcm_bytes)
+            return
+        
+        # Otherwise, check for wake word
+        # Add to wake word buffer
+        wake_word_buffer.extend(pcm_array.tolist())
+        
+        # Process in frame_length chunks
+        while len(wake_word_buffer) >= porcupine.frame_length:
+            # Extract one frame
+            frame = wake_word_buffer[:porcupine.frame_length]
+            wake_word_buffer = wake_word_buffer[porcupine.frame_length:]
+            
+            # Check for wake word
+            result = porcupine.process(frame)
+            
+            # Calculate audio level for visualization
+            audio_level = int((sum(abs(x) for x in frame) / len(frame)) / 327.67)
+            audio_level = min(audio_level, 100)
+            
+            # Send audio level
+            await broadcast({
+                "type": "audio_level",
+                "level": audio_level
+            })
+            
+            # Wake word detected!
+            if result >= 0:
+                print(f"✅ Wake word detected at {datetime.now().strftime('%H:%M:%S')}")
+                
+                await broadcast({
+                    "type": "detection",
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Start recording
+                is_recording_command = True
+                audio_buffer = []
+                wake_word_buffer = []  # Clear buffer
+                
+                await broadcast({
+                    "type": "recording",
+                    "message": f"Recording command for {RECORDING_DURATION} seconds...",
+                    "duration": RECORDING_DURATION
+                })
+                
+                # Schedule transcription after RECORDING_DURATION
+                asyncio.create_task(schedule_transcription())
+                
+                break
+    
+    except Exception as e:
+        print(f"❌ Error processing audio chunk: {e}")
+
+# ===== SCHEDULE TRANSCRIPTION =====
+async def schedule_transcription():
+    """Wait for recording duration, then transcribe"""
+    global is_recording_command, audio_buffer, porcupine
+    
+    try:
+        # Calculate expected chunks
+        chunks_needed = int((RECORDING_DURATION * porcupine.sample_rate) / (porcupine.frame_length))
+        
+        # Wait for recording to complete
+        start_time = asyncio.get_event_loop().time()
+        while is_recording_command:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            
+            if elapsed >= RECORDING_DURATION:
+                break
+            
+            # Send progress
+            progress = min(int((elapsed / RECORDING_DURATION) * 100), 100)
+            await broadcast({
+                "type": "recording_progress",
+                "progress": progress
+            })
+            
+            await asyncio.sleep(0.1)
+        
+        print("✅ Recording complete")
+        await broadcast({
+            "type": "status",
+            "message": "Recording complete. Processing..."
+        })
+        
+        # Transcribe
+        if audio_buffer:
+            await transcribe_audio(audio_buffer, porcupine.sample_rate)
+        
+    except Exception as e:
+        print(f"❌ Transcription scheduling error: {e}")
+    finally:
+        is_recording_command = False
+        audio_buffer = []
 
 # ===== TRANSCRIBE AUDIO =====
 async def transcribe_audio(audio_data, sample_rate):
@@ -110,7 +220,7 @@ async def transcribe_audio(audio_data, sample_rate):
         # Combine audio frames
         audio_bytes = b''.join(audio_data)
         
-        # Create AudioData object (sample_width=2 for paInt16)
+        # Create AudioData object (sample_width=2 for int16)
         audio = sr.AudioData(audio_bytes, sample_rate, 2)
         
         # Run speech recognition in executor (non-blocking)
@@ -156,131 +266,6 @@ async def transcribe_audio(audio_data, sample_rate):
         })
         return None
 
-# ===== RECORD COMMAND =====
-async def record_command():
-    """Record audio for RECORDING_DURATION seconds and transcribe"""
-    global is_recording_command, stream, porcupine, audio_buffer
-    
-    print(f"🎙️  Recording for {RECORDING_DURATION} seconds...")
-    
-    # Notify frontend recording started
-    await broadcast({
-        "type": "recording",
-        "message": f"Recording command for {RECORDING_DURATION} seconds...",
-        "duration": RECORDING_DURATION
-    })
-    
-    # Clear buffer
-    audio_buffer = []
-    
-    # Calculate frames to record
-    frames_to_record = int(porcupine.sample_rate * RECORDING_DURATION / porcupine.frame_length)
-    
-    try:
-        # Record frames
-        for i in range(frames_to_record):
-            if not is_recording_command:
-                print("⚠️  Recording cancelled")
-                break
-            
-            # Read audio frame
-            pcm_bytes = stream.read(porcupine.frame_length, exception_on_overflow=False)
-            audio_buffer.append(pcm_bytes)
-            
-            # Calculate progress
-            progress = int((i + 1) / frames_to_record * 100)
-            
-            # Send progress every 10 frames
-            if i % 10 == 0:
-                await broadcast({
-                    "type": "recording_progress",
-                    "progress": progress
-                })
-            
-            await asyncio.sleep(0.001)
-        
-        print("✅ Recording complete")
-        await broadcast({
-            "type": "status",
-            "message": "Recording complete. Processing..."
-        })
-        
-        # Transcribe
-        if audio_buffer:
-            await transcribe_audio(audio_buffer, porcupine.sample_rate)
-        
-    except Exception as e:
-        print(f"❌ Recording error: {e}")
-        await broadcast({
-            "type": "error",
-            "message": f"Recording error: {str(e)}"
-        })
-    
-    finally:
-        is_recording_command = False
-        audio_buffer = []
-
-# ===== LISTENING LOOP =====
-async def listen_for_wake_word():
-    """Main loop: detect wake word and trigger recording"""
-    global is_listening, is_recording_command, stream, porcupine
-    
-    print("🎤 Listening for 'Hello Root'...")
-    await broadcast({
-        "type": "status",
-        "message": "Listening for 'Hello Root'..."
-    })
-    
-    try:
-        while is_listening:
-            # Skip if recording
-            if is_recording_command:
-                await asyncio.sleep(0.1)
-                continue
-            
-            # Read audio frame
-            pcm_bytes = stream.read(porcupine.frame_length, exception_on_overflow=False)
-            pcm = struct.unpack_from("h" * porcupine.frame_length, pcm_bytes)
-            
-            # Check for wake word
-            result = porcupine.process(pcm)
-            
-            # Calculate audio level for visualization
-            audio_level = int((sum(abs(x) for x in pcm) / len(pcm)) / 327.67)
-            audio_level = min(audio_level, 100)
-            
-            # Send audio level
-            await broadcast({
-                "type": "audio_level",
-                "level": audio_level
-            })
-            
-            # Wake word detected!
-            if result >= 0:
-                print(f"✅ Wake word detected at {datetime.now().strftime('%H:%M:%S')}")
-                
-                await broadcast({
-                    "type": "detection",
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                # Start recording
-                is_recording_command = True
-                await record_command()
-            
-            await asyncio.sleep(0.01)
-    
-    except Exception as e:
-        print(f"❌ Listening error: {e}")
-        await broadcast({
-            "type": "error",
-            "message": f"Error: {str(e)}"
-        })
-    
-    finally:
-        is_listening = False
-        print("🛑 Stopped listening")
-
 # ===== WEBSOCKET HANDLER =====
 async def handle_client(websocket):
     """Handle WebSocket client connections"""
@@ -302,25 +287,36 @@ async def handle_client(websocket):
         async for message in websocket:
             try:
                 data = json.loads(message)
-                action = data.get("action")
+                msg_type = data.get("type")
                 
-                if action == "start" and not is_listening:
-                    print("▶️  Starting listening...")
+                if msg_type == "start" and not is_listening:
+                    print("▶️ Starting listening...")
                     is_listening = True
-                    asyncio.create_task(listen_for_wake_word())
+                    await broadcast({
+                        "type": "status",
+                        "message": "Listening for 'Clinisio'..."
+                    })
                 
-                elif action == "stop" and is_listening:
-                    print("⏸️  Stopping listening...")
+                elif msg_type == "stop" and is_listening:
+                    print("⏸️ Stopping listening...")
                     is_listening = False
                     await broadcast({
                         "type": "status",
                         "message": "Listening stopped"
                     })
                 
+                elif msg_type == "audio" and is_listening:
+                    # Process audio chunk
+                    audio_data = data.get("data")
+                    sample_rate = data.get("sampleRate", 16000)
+                    
+                    if audio_data:
+                        await process_audio_chunk(audio_data, sample_rate)
+                
             except json.JSONDecodeError:
-                print(f"⚠️  Invalid JSON from client {client_id}")
+                print(f"⚠️ Invalid JSON from client {client_id}")
             except Exception as e:
-                print(f"⚠️  Error processing message: {e}")
+                print(f"⚠️ Error processing message: {e}")
     
     except websockets.exceptions.ConnectionClosed:
         print(f"🔌 Client {client_id} disconnected")
@@ -333,7 +329,7 @@ async def handle_client(websocket):
         # Stop listening if no clients
         if len(connected_clients) == 0:
             is_listening = False
-            print("ℹ️  No clients. Listening stopped.")
+            print("ℹ️ No clients. Listening stopped.")
 
 # ===== MAIN =====
 async def main():
@@ -349,12 +345,11 @@ async def main():
     
     print(f"\n📡 Server: ws://localhost:8765")
     print(f"🎯 Wake Word: 'Clinisio'")
-    print(f"⏱️  Recording: {RECORDING_DURATION} seconds after wake word")
+    print(f"⏱️ Recording: {RECORDING_DURATION} seconds after wake word")
     print(f"\n💡 Usage:")
-    print(f"   1. Open React app and click 'Connect'")
-    print(f"   2. Click 'Start Listening'")
-    print(f"   3. Say: 'Clinisio' + your command")
-    print(f"   4. Example: 'Clinisio, add paracetamol 650 mg'")
+    print(f"   1. Open React app and click 'Start Listening'")
+    print(f"   2. Say: 'Clinisio' + your command")
+    print(f"   3. Example: 'Clinisio, add paracetamol 650 mg'")
     print(f"\nPress Ctrl+C to stop")
     print("=" * 70 + "\n")
     
@@ -371,7 +366,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\n" + "=" * 70)
-        print("⚠️  Server stopped by user (Ctrl+C)")
+        print("⚠️ Server stopped by user (Ctrl+C)")
         print("=" * 70)
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
