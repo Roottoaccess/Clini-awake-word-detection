@@ -1,5 +1,4 @@
 websockets
 asyncio
-pyaudio
 speechrecognition
 pvporcupine
